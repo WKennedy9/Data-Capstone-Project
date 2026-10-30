@@ -1,0 +1,1777 @@
+---
+title: "Data Capstone: Using NJAC Baseball Data to Evaluate Player Awards"
+author: "Professor Osei Tweneboah"
+date: "Will Kennedy"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+library(readxl)
+library(dplyr)
+library(tidyr)
+library(janitor)
+library(stringr)
+library(ggplot2)
+library(knitr)
+library(tibble)
+library(rvest)
+library(purrr)
+library(fuzzyjoin)
+library(stringdist)
+library(corrplot)
+library(survival)
+library(pROC)
+library(caret)
+library(e1071)
+
+setwd("C:/Users/willk/OneDrive/Desktop/Data Capstone")
+```
+
+Load Hitters, Pitchers, Fielding, and Standing Excels in, named by year. There was no season in 2020
+```{r, echo=FALSE}
+years <- c(10,11,12,13,14,15,16,17,18,19,21,22,23,24,25,26) 
+sheet_nums <- seq_along(years) 
+
+for (i in seq_along(years)) { 
+  assign( 
+    paste0("hitters", years[i]),
+    read_excel("NJAC Hitters.xlsx", sheet = sheet_nums[i]) 
+  ) 
+} 
+
+for (i in seq_along(years)) { 
+  assign( 
+    paste0("pitchers", years[i]), 
+    read_excel("NJAC Pitchers.xlsx", sheet = sheet_nums[i]) 
+  ) 
+} 
+
+for (i in seq_along(years)) { 
+  assign( 
+    paste0("fielders", years[i]), 
+    read_excel("NJAC Fielding.xlsx", sheet = sheet_nums[i]) 
+  ) 
+}
+
+for (i in seq_along(years)) { 
+  assign( 
+    paste0("standings", years[i]), 
+    read_excel("NJAC Standings.xlsx", sheet = sheet_nums[i]) 
+  ) 
+}
+```
+
+Fix names so its "First Last" not "Last, First"
+```{r, echo=FALSE}
+format_player_names <- function(col = Player) { 
+  
+  df_names <- ls(envir = .GlobalEnv) 
+  df_names <- df_names[sapply(df_names, function(x) is.data.frame(get(x, envir = .GlobalEnv)))] 
+  
+  for (nm in df_names) { 
+    df <- get(nm, envir = .GlobalEnv) 
+    
+    if (as.character(substitute(col)) %in% names(df)) { 
+      df <- df %>% 
+        mutate({{ col }} := str_replace({{ col }}, "^(.*),\\s*(.*)$", "\\2 \\1"))
+      assign(nm, df, envir = .GlobalEnv) 
+    } 
+  } 
+}
+
+format_player_names(col = Player)
+```
+
+Remove white space from column names and make lowercase
+```{r, echo=FALSE}
+df_names <- ls()[sapply(ls(), function(x) is.data.frame(get(x)))] 
+
+for (nm in df_names) { 
+  df <- get(nm) 
+  df <- clean_names(df) 
+  names(df) <- tolower(names(df))
+  assign(nm, df, envir = .GlobalEnv) }
+```
+
+Split Appearance and Games Started columns for Pitchers 11-19
+```{r, echo=FALSE}
+split_app_gs <- function(df, col = "app_gs") {
+  df %>% 
+    separate(
+      {{ col }},
+      into = c("app", "gs"),
+      sep = "-",
+      convert = TRUE
+    )
+}
+
+pitchers11 <- split_app_gs(pitchers11)
+pitchers12 <- split_app_gs(pitchers12)
+pitchers13 <- split_app_gs(pitchers13)
+pitchers14 <- split_app_gs(pitchers14)
+pitchers15 <- split_app_gs(pitchers15)
+pitchers16 <- split_app_gs(pitchers16)
+pitchers17 <- split_app_gs(pitchers17)
+pitchers18 <- split_app_gs(pitchers18)
+pitchers19 <- split_app_gs(pitchers19)
+
+pitchers22 <- split_app_gs(pitchers22)
+pitchers23 <- split_app_gs(pitchers23)
+pitchers24 <- split_app_gs(pitchers24)
+pitchers25 <- split_app_gs(pitchers25)
+pitchers26 <- split_app_gs(pitchers26)
+```
+
+Split Games Played and Games Started columns as well as Stolen Bases and attempts
+```{r, echo=FALSE}
+split_gp_gs <- function(df, col = "gp_gs") {
+  df %>% 
+    separate(
+      {{ col }},
+      into = c("gp", "gs"),
+      sep = "-",
+      convert = TRUE
+    )
+}
+
+hitters10 <- split_gp_gs(hitters10)
+hitters11 <- split_gp_gs(hitters11)
+hitters12 <- split_gp_gs(hitters12)
+hitters13 <- split_gp_gs(hitters13)
+hitters14 <- split_gp_gs(hitters14)
+hitters15 <- split_gp_gs(hitters15)
+hitters16 <- split_gp_gs(hitters16)
+hitters17 <- split_gp_gs(hitters17)
+hitters18 <- split_gp_gs(hitters18)
+hitters19 <- split_gp_gs(hitters19)
+hitters21 <- split_gp_gs(hitters21)
+hitters22 <- split_gp_gs(hitters22)
+hitters23 <- split_gp_gs(hitters23)
+hitters24 <- split_gp_gs(hitters24)
+hitters25 <- split_gp_gs(hitters25)
+hitters26 <- split_gp_gs(hitters26)
+
+
+split_sb_att <- function(df, col = "sb_att") {
+  df %>% 
+    separate(
+      {{ col }},
+      into = c("sb", "att"),
+      sep = "-",
+      convert = TRUE
+    )
+}
+
+hitters10 <- split_sb_att(hitters10)
+hitters11 <- split_sb_att(hitters11)
+hitters12 <- split_sb_att(hitters12)
+hitters13 <- split_sb_att(hitters13)
+hitters14 <- split_sb_att(hitters14)
+hitters15 <- split_sb_att(hitters15)
+hitters16 <- split_sb_att(hitters16)
+hitters17 <- split_sb_att(hitters17)
+hitters18 <- split_sb_att(hitters18)
+hitters19 <- split_sb_att(hitters19)
+hitters21 <- split_sb_att(hitters21)
+
+
+split_sb <- function(df, col = "sb") {
+  df %>% 
+    separate(
+      {{ col }},
+      into = c("sb", "att"),
+      sep = "-",
+      convert = TRUE
+    )
+}
+
+hitters22 <- split_sb(hitters22)
+hitters23 <- split_sb(hitters23)
+hitters24 <- split_sb(hitters24)
+hitters25 <- split_sb(hitters25)
+hitters26 <- split_sb(hitters26)
+```
+
+Convert Columns to integer and numeric values
+```{r, echo=FALSE}
+pitcher_int <- c("app","gs","cg","sv","h","r","er","bb","so","x2b","x3b","hr",
+                 "ab","wp","hbp","bk","sfa","sha")
+pitcher_num <- c("era","b_avg", "ip", "whip")
+pitcher_dfs <- ls(pattern = "^pitchers")
+
+for (name in pitcher_dfs) {
+  df <- get(name)
+
+  
+  int_cols <- intersect(pitcher_int, names(df))
+  df[int_cols] <- lapply(df[int_cols], as.integer)
+
+  num_cols <- intersect(pitcher_num, names(df))
+  df[num_cols] <- lapply(df[num_cols], as.numeric)
+
+  assign(name, df, envir = .GlobalEnv)
+}
+
+
+
+hitter_int <- c("gp", "gs", "ab", "r", "h", "x2b", "x3b", "hr", "rbi","tb", "bb", "hbp", "so", "gdp", "sf", "sh", "sb", "att")
+hitter_num <- c("avg","slg_percent", "ob_percent", "ops")
+hitter_dfs <- ls(pattern = "^hitters")
+
+for (name in hitter_dfs) {
+  df <- get(name)
+
+  
+  int_cols <- intersect(hitter_int, names(df))
+  df[int_cols] <- lapply(df[int_cols], as.integer)
+
+  num_cols <- intersect(hitter_num, names(df))
+  df[num_cols] <- lapply(df[num_cols], as.numeric)
+
+  assign(name, df, envir = .GlobalEnv)
+}
+
+
+
+fielder_int <- c("c", "po", "a", "e", "dp", "sba", "csb", "pb", "ci")
+fielder_num <- c("fld_percent", "sba_percent")
+fielder_dfs <- ls(pattern = "^fielders")
+
+for (name in fielder_dfs) {
+  df <- get(name)
+
+  
+  int_cols <- intersect(fielder_int, names(df))
+  df[int_cols] <- lapply(df[int_cols], as.integer)
+
+  num_cols <- intersect(fielder_num, names(df))
+  df[num_cols] <- lapply(df[num_cols], as.numeric)
+
+  assign(name, df, envir = .GlobalEnv)
+}
+```
+
+Change innings pitched from base-3 to base-10 value
+```{r, echo=FALSE}
+convert_ip <- function(x) { 
+  x <- as.numeric(x) 
+  whole <- floor(x) 
+  decimal <- x - whole 
+  
+  adj <- dplyr::case_when( 
+    abs(decimal - 0.1) < 1e-9 ~ 1/3, 
+    abs(decimal - 0.2) < 1e-9 ~ 2/3, 
+    TRUE ~ decimal 
+  )
+  
+  whole + adj 
+}
+
+for (nm in df_names[grepl("^pitchers", df_names)]) { 
+  df <- get(nm) 
+  
+  if ("ip" %in% names(df)) { 
+    df$ip <- convert_ip(df$ip) 
+  } 
+  
+  assign(nm, df, envir = .GlobalEnv) 
+  
+}
+```
+
+View data type of the data sets
+```{r, echo=FALSE}
+eda_summary <- function(df) { 
+  tibble( 
+    column = names(df), 
+    type = sapply(df, function(x) class(x)[1]), 
+    na = sapply(df, function(x) sum(is.na(x))), 
+    unique = sapply(df, function(x) length(unique(x))) 
+  ) 
+}
+
+eda_results <- lapply(df_names, function(nm) { 
+  out <- eda_summary(get(nm)) 
+  out$df <- nm 
+  out 
+}) 
+
+eda_results <- bind_rows(eda_results)
+
+eda_correct_type <- eda_results %>% 
+  filter(type == "character",
+         column != "team" & column != "player")
+print(unique(eda_correct_type$column))
+```
+Everything is numeric beside these 5 columns. 
+I will not use the first 4, the final two being categorical are fine.
+They are my target variables, the same variable but for different positions.
+
+
+Web Scrape for Positions and Age
+```{r, echo=FALSE}
+team_urls <- tibble(
+  team_abbrev = c("RCNJ", "KEAN", "ROW", "WPU", "MSU", "STO", "TCNJ", "NJCU", "RNU", "RCU"),
+  url = c(
+    "https://ramapoathletics.com/sports/baseball/roster/",
+    "https://keanathletics.com/sports/baseball/roster/",
+    "https://www.rowanathletics.com/sports/baseball/roster/",
+    "https://www.wpupioneers.com/sports/baseball/roster/",
+    "https://montclairathletics.com/sports/baseball/roster/",
+    "https://stocktonathletics.com/sports/baseball/roster/",
+    "https://tcnjathletics.com/sports/baseball/roster/",
+    "https://njcugothicknights.com/sports/baseball/roster/",
+    "https://rutgersnewarkathletics.com/sports/baseball/roster/",
+    "https://scarletraptors.com/sports/baseball/roster/"
+  )
+)
+
+
+df_list <- mget(ls(pattern = "^(hitters|pitchers|fielders)\\d{2}$"))
+
+
+extract_year <- function(df_name) {
+  suffix <- sub("^(hitters|pitchers|fielders)", "", df_name)
+  year <- as.integer(paste0("20", suffix))
+  return(year)
+}
+
+
+build_url <- function(team_abbrev, year) {
+  base <- team_urls$url[team_urls$team_abbrev == team_abbrev]
+  paste0(base, year)
+}
+
+
+clean_position <- function(x) {
+  x %>%
+    str_split("\n") %>%              
+    sapply(function(lines) {
+      lines %>%
+        str_trim() %>%               
+        .[. != ""] 
+      
+      short_codes <- c("P", "RHP", "LHP", 
+                       "C", "1B", "2B", 
+                       "3B", "SS", "INF", 
+                       "OF", "UTL", "DH")
+      
+      short_match <- lines[lines %in% short_codes] 
+      
+      if (length(short_match) > 0) {
+        return(short_match[1])
+      } else {
+          return(lines[1])
+        }
+    })
+}
+
+
+scrape_team_year <- function(team_abbrev, year) {
+  base <- team_urls$url[team_urls$team_abbrev == team_abbrev]
+  url <- paste0(base, year)
+
+  message("Scraping: ", url)
+
+  page <- read_html(url)
+  players <- page %>% html_nodes(".sidearm-roster-player")
+
+  tibble(
+    team = team_abbrev,
+    name = players %>% html_node(".sidearm-roster-player-name") %>% html_text(trim = TRUE),
+    position = clean_position(players %>% html_node(".sidearm-roster-player-position") %>% html_text(trim = TRUE)),
+    class_year = players %>% html_node(".sidearm-roster-player-academic-year") %>% html_text(trim = TRUE)
+  )
+}
+
+
+
+scrape_all_teams_for_year <- function(year) {
+  bind_rows(lapply(team_urls$team_abbrev, function(team) {
+    scrape_team_year(team, year)
+  }))
+}
+
+
+roster_results <- lapply(names(df_list), function(df_name) { 
+  df <- df_list[[df_name]] 
+  year <- extract_year(df_name) 
+  roster <- scrape_all_teams_for_year(year) 
+  list( 
+    df_name = df_name, 
+    year = year, 
+    roster = roster 
+    ) 
+  })
+```
+
+Join the scraped data to the stats
+```{r}
+df_names <- ls(pattern = "^(hitters|pitchers|fielders)\\d{2}$")
+
+for (nm in df_names) {
+  
+  clean <- function(s) {
+    s %>%
+      str_replace_all("[\r\n\t]", " ") %>%      
+      str_replace_all("[^A-Za-z ]", " ") %>%    
+      str_squish() %>%                         
+      { 
+        map_chr(., function(x) {
+          words <- str_split(x, " ", simplify = TRUE)
+          n <- ncol(words)
+          if (n >= 2) {
+            paste(words[, (n-1):n], collapse = " ")
+          } else {
+            x
+          }
+        })
+      } %>%
+      str_to_lower()
+  }
+
+  split_name <- function(x) {
+    parts <- str_split(x, " ", simplify = TRUE)
+    tibble(
+      first = parts[,1],
+      last  = parts[,ncol(parts)]
+    )
+  }
+  
+  df <- get(nm)
+  
+  match_idx <- which(sapply(roster_results, function(x) x$df_name == nm)) 
+  match <- roster_results[[match_idx]]
+  match_df <- as_tibble(match$roster)
+  
+  df_clean <- df %>%
+    mutate(clean_name = clean(player)) %>%
+    bind_cols(split_name(.$clean_name))
+  
+  match_clean <- match_df %>%
+    mutate(clean_name = clean(name)) %>%
+    bind_cols(split_name(.$clean_name))
+  
+  
+  joined <- df_clean %>%
+    left_join(
+      match_clean %>% select(last, position, class_year, clean_name),
+      by = "last"
+    )
+  
+  new_name <- paste0(nm, "_scraped")
+  assign(new_name, joined)
+}
+```
+
+Filter out some of the joins to be more accurate. There are double joins based on last name.
+```{r}
+scraped_names <- ls(pattern = "^(hitters|pitchers|fielders)\\d{2}_scraped$")
+
+for (nm in scraped_names) {
+  
+  df <- get(nm)
+  
+  
+  df$name_dist <- stringdist(df$clean_name.x, df$clean_name.y, method = "lv")
+  
+  df_filtered <- df[df$clean_name.x == df$clean_name.y | 
+                      df$name_dist <= 3, ]
+  
+  assign(nm, df_filtered)
+}
+
+```
+
+Filter out duplicated names. These are players with the same exact name that need to be hardcoded.
+```{r}
+for (nm in scraped_names) {
+  
+  df <- get(nm)
+  dup_names <- df$player[duplicated(df$player)]
+  
+  if (length(dup_names) == 0) {
+    assign(nm, df)
+    next
+  }
+  
+  df_filtered <- df %>% 
+    filter(!(player %in% dup_names) | clean_name.x == clean_name.y)
+  
+  df_filtered <- df_filtered %>%
+    mutate(position = str_trim(position)) %>% 
+    filter(
+      !((player == "Ken O'Donnell" & team == "WPU" & position == "Pitcher") |
+      (player == "Pat O'Donnell" & team == "ROW" & position == "Catcher") |
+      (player == "Michael Murray" & team == "TCNJ" & position == "Outfield") |
+      (player == "Michael Murray" & team == "RNU" & position == "Infielder") |
+      (player == "R.J. McGettigan" & team == "RCU" & position == "First Base/Pitcher" & class_year == "Fr.") |
+      (player == "A.J. McGettigan" & team == "RCU" & position == "First Base" & class_year == "Sr.") |
+      (player == "Mike Novak" & team == "NJCU" & position == "OF" & class_year == "So.") |
+      (player == "Mike Novak" & team == "WPU" & position == "Outfield" & class_year == "FR") |
+      (player == "Joey Nolan" & team == "MSU" & position == "C" & class_year == "Fr.")
+      )) 
+  
+  assign(nm, df_filtered)
+}
+```
+
+Removing NA rows from the data.
+```{r}
+for (nm in scraped_names) {
+  df <- get(nm)
+  df <- df[complete.cases(df), ]
+  assign(nm, df)
+}
+```
+
+Add in players who do not have roster web scrape data. We still want to use their stats. We will remove them later.
+```{r, echo=FALSE}
+colnames(pitchers10_scraped)[colnames(pitchers10_scraped) == 'sho_cbo'] <- 'sho'
+cols_to_join_h <- setdiff(intersect(names(hitters10_scraped), names(hitters10)), c("position", "class_year"))
+cols_to_join_p <- setdiff(intersect(names(pitchers10_scraped), names(pitchers10)), c("position", "class_year"))
+
+years <- setdiff(10:26, 20)  
+
+for (i in years) {
+
+  p_s <- get(paste0("pitchers", i, "_scraped"))
+  h_s <- get(paste0("hitters", i, "_scraped"))
+  
+  p <- get(paste0("pitchers", i))
+  h <- get(paste0("hitters", i))
+
+  assign(
+    paste0("pitchers", i, "_merged"),
+    left_join(p, p_s, by = cols_to_join_p)
+  )
+
+  assign(
+    paste0("hitters", i, "_merged"),
+    left_join(h, h_s, by = cols_to_join_h)
+  )
+}
+```
+
+Check NA
+```{r, echo=FALSE}
+sapply(df_names, function(x) anyNA(get(x)))
+```
+No NA found.
+
+```{r, echo=FALSE}
+sapply(scraped_names, function(x) anyNA(get(x)))
+```
+No NA found.
+
+```{r, echo=FALSE}
+merged_names <- ls(pattern = "^(hitters|pitchers|fielders)\\d{2}_merged$")
+sapply(merged_names, function(x) anyNA(get(x)))
+```
+We expect most dfs to have NA. We will remove the NA for modeling, but will keep for WAR calculation.
+I want the players to be used for their stats even if they have no roster.
+
+
+
+Standardize position and calculate attributes for WAR.
+Citation for Pitchers WAR: https://library.fangraphs.com/war/calculating-war-pitchers/
+Citation for Hitters WAR: https://library.fangraphs.com/war/war-position-players/
+```{r}
+# Pitchers
+pitcher_names <- ls(pattern = "^(pitchers)\\d{2}_merged$")
+pitcher_alt <- c("pitcher", "p", "rhp", "right-handed pitcher", "left-handed pitcher",
+                 "left-hand pitcher", "lhp", "right handed pitcher", 
+                 "left handed pitcher", "right-handed pitcherright-handed pitcher")
+pitcher_league_IP <- list()
+pitcher_league_Runs <- list()
+
+
+for (nm in pitcher_names) {
+
+  df <- get(nm)
+
+  year <- sub(".*?(\\d{2})_merged$", "\\1", nm)
+
+  df_filtered <- df %>%
+    mutate(
+      year = as.integer(year),
+      position = str_trim(tolower(position)),
+      position = case_when(
+        position %in% pitcher_alt ~ "P",
+        !position %in% pitcher_alt ~ "P/UTL",
+        TRUE ~ position)
+
+      )
+
+  # Get league average stats
+  league_stats <- df_filtered %>%
+  summarise(
+    lg_HR = sum(hr),
+    lg_BB = sum(bb),
+    lg_HBP = sum(hbp),
+    lg_SO = sum(so),
+    lg_IP = sum(ip),
+    lg_R = sum(r),
+    lg_ER = sum(er)
+  )
+
+  # Add IP and R to list for hitters df
+  pitcher_league_IP[[nm]] <- league_stats$lg_IP
+  pitcher_league_Runs[[nm]] <- league_stats$lg_R
+
+  # League average FIP without constant
+  lg_FIP_no_const <- (13*league_stats$lg_HR + 3*(league_stats$lg_BB + league_stats$lg_HBP) - 2*league_stats$lg_SO) / league_stats$lg_IP
+
+  # League average ERA
+  lg_ERA <- (9 * league_stats$lg_ER) / league_stats$lg_IP
+
+  # League average RA9
+  lg_RA9 <- (9 * league_stats$lg_R) / league_stats$lg_IP
+
+  # Adjustment for FIP
+  adjustment <- lg_RA9 - lg_ERA
+
+  # FIP constant
+  FIP_constant <- lg_ERA - lg_FIP_no_const
+
+  # League average FIP
+  lg_FIP <- lg_FIP_no_const + FIP_constant
+
+  # FIPR9
+  lg_FIPR9 <- lg_FIP + adjustment
+
+  # FIP, RAA9, RPW, WPGAA, REPlevel, WPGAR, WARa, and WAR for each player
+  df_filtered <- df_filtered %>%
+  mutate(
+    ip_nonzero = ifelse(ip == 0, NA, ip),
+    FIP_no_const = (13*hr + 3*(bb + hbp) - 2*so) / ip_nonzero,
+    FIP = FIP_no_const + FIP_constant,
+    FIPR9 = FIP + adjustment,
+    RAAP9 = lg_FIPR9 - FIPR9,
+    RPW = (FIPR9 + 2)*1.5,
+    WPGAA = RAAP9/RPW,
+    REPlevel = 0.03*(1 - (gs/18)) + 0.12*(gs/18),
+    WPGAR = WPGAA + REPlevel,
+    WARa = ifelse(ip == 0, 0, WPGAR * (ip/9))
+  )
+
+    # Calculate the correction value
+    total_WARa <- sum(df_filtered$WARa)
+    correction = (16 - total_WARa)/league_stats$lg_IP
+
+    df_filtered <- df_filtered %>%
+      mutate(
+          pWAR = WARa + (correction*ip)
+      )
+
+  assign(nm, df_filtered)
+}
+
+
+
+# Hitters
+hitter_names <- ls(pattern = "^(hitters)\\d{2}_merged$")
+
+infield_names <- c("infield", "if", "inf", "infielder", "infielder/pitcher", "pitcher/infielder", "if/p", "if/rhp",
+                   "p/if", "1b", "first base", "first baseman", "1b/p", "p/1b", "2b", "second base", "second baseman",
+                   "2b/if", "second base/shortstop", "second base/third base", "ss", "shortstop", "ss/3b","3b",
+                   "third base", "third baseman", "3b/if", "third base/first base", "third base/second base",
+                   "shortstop/right-handed pitcher", "shortstop/second base", "shortstop/third base",
+                   "middle infielder", "left-handed pitcher/first base", "first base/right-handed pitcher",
+                   "first baseman/right-handed pitcher", "first baseman/left-handed pitcher", "infield/pither",
+                   "pitcher/third base", "pitcher/second base", "first base/designated hitter",
+                   "third base/designated hitter", "third base/first base/pitcher", "third base-pitcher",
+                   "shortstop/second base/third base", "second base/right-handed pitcher", "second baseman/third baseman",
+                   "1b/dh", "right-handed pitcher/third base", "second baseman/right-handed pitcher",
+                   "third baseman/shortstop", "third base - pitcher", "right-handed pitcher/infield",
+                   "left-handed pitcher/first baseman", "first base-pitcher", "third base/shortstop",
+                   "shortstop-pitcher", "second base - pitcher", "third base/pitcher", "third base/right-handed pitcher",
+                   "right-handed pitcher/third baseman", "third baseman/second baseman", "shortstop/second baseman",
+                   "p/third base", "p-1b", "3b/p", "3b/dh", "shortstop/pitcher", "p/inf", "inf/ss", "first/third baseman",
+                   "third base / first base", "rhp/3b", "if/dh", "first base/pitcher", "first base/left-handed pitcher",
+                   "pitcher/first base", "infield/pitcher", "pitcher/infield", "first base/third base",
+                   "infield/right-handed pitcher", "infielder/right-handed pitcher", "inf/rhp")
+
+outfield_names <- c("outfield", "of", "outfielder", "outfield/pitcher", "pitcher-outfield", "pitcher/outfielder",
+                    "of/p", "p/of", "rightfielder", "right fielder", "leftfielder", "centerfielder", "center fielder",
+                    "outfield / first base", "outfield/dh", "outfield/infielder", "outfield/left-handed pitcher",
+                    "outfield/right-handed pitcher", "pitcher / outfield", "oufielder", "of/dh", "p/0f",
+                    "outfielder/designated hitter", "left-handed pitcher/outfield",
+                    "leftfielder / centerfielder / right-handed pitcher", "left-handed pitcher/outfielder",
+                    "designated hitter/rightfielder", "outfield-pitcher", "centerfielder/leftfielder",
+                    "left-handed pitcher/leftfielder","pitcher/outfield", "of/rhp", "outfield/pitcher",
+                    "right-handed pitcher/outfield", "left-hand pitcher/outfield", "outfielder/pitcher")
+
+catcher_names <- c("catcher", "c", "c/dh", "c/p", "catcher-pitcher", "catcher / right-handed pitcher",
+                   "catcher/right-handed pitcher")
+
+utility_names <- c("utility", "ut", "utillity", "catcher/utility", "cather/utility", "infield/outfield",
+                   "outfield/infield", "if/of", "of/if", "2b/of", "outfield / first base",
+                   "outfield/first base/catcher", "outfield/third base/right-handed pitcher", "of/if/p",
+                   "pitcher/first base/outfielder", "pitcher/catcher/outfielder", "middle infielder/outfielder",
+                   "infielder/outfielder", "first base/outfield", "first base/outfielder", "first base/outfielder/catcher",
+                   "shortstop/outfield", "second base/outfield", "right-handed pitcher/utility",
+                   "right-handed pitcher/infield/utility", "catcher/outfield", "catcher/first base",
+                   "catcher/first base/third base", "catcher/infielder", "catcher/middle infielder",
+                   "catcher / infielder", "catcher/third baseman", "catcher/outfielder", "catcher/first base/designated hitter",
+                   "outfield/first base", "outfield/firstbase", "outfield/third base", "outfield/infielder",
+                   "outfield/catcher", "first base/catcher", "outfielder/catcher", "designated hitter/right-handed pitcher",
+                   "1b/c", "left fielder/first base", "infielder/catcher", "outfielder/third base/right-handed pitcher",
+                   "left-handed pitcher/first base/outfielder", "second base/outfielder", "first base-catcher",
+                   "outfield-catcher", "first base-outfield", "first base/designated hitter/catcher",
+                   "left-handed pitcher/first base", "first baseman/ catcher", "third baseman/leftfielder",
+                   "of/c", "pitcher/dh", "outfielder/first base/catcher", "third baseman/outfielder/right-handed pitcher",
+                   "left-handed pitcher/outfielder", "inf/of", "pitcher/infield/outfield",
+                   "right-handed pitcher/infielder/outfielder", "right-handed pitcher/infield/outfield", "c/1b",
+                   "third base/catcher", "1b/of", "p/dh", "c/of", "designated hitter/pitcher", "catcher/infield",
+                   "infielder/outfielder/left-handed pitcher", "outfielder/infielder", "outfielder/first base",
+                   "pitcher/designated hitter", "right-hand pitcher/utility", "infield/outfied")
+
+
+for (nm in hitter_names) {
+
+  df <- get(nm)
+  
+  year <- sub(".*?(\\d{2})_merged$", "\\1", nm)
+
+  df_filtered <- df %>%
+    mutate(
+      year = as.integer(year),
+      position = str_trim(tolower(position)),
+      position = case_when(
+        position %in% infield_names ~ "INF",
+        position %in% outfield_names ~ "OF",
+        position %in% catcher_names ~ "C",
+        position %in% utility_names ~ "UTL",
+        position %in% pitcher_alt ~ "P",
+        TRUE ~ position)
+      )
+  
+  # Get league average stats
+  league_stats <- df_filtered %>%
+  summarise(
+    lg_PA = sum(ab) + sum(bb) + sum(hbp) + sum(sf),
+    lg_SG = sum(h) - (sum(x2b) + sum(x3b) + sum(hr)),
+    lg_DB = sum(x2b),
+    lg_TP = sum(x3b),
+    lg_HR = sum(hr),
+    lg_BB = sum(bb),
+    lg_HBP = sum(hbp),
+    lg_R = sum(r),
+    lg_SB = sum(sb),
+    lg_CS = sum(att) - sum(sb),
+    lg_GDP = sum(gdp),
+    lg_SB_OPP = sum(ab) - sum(h) - sum(so) - sum(hr)
+  )
+    
+    # Pull league sum of IP
+    pitcher_key <- sub("^hitters", "pitchers", nm) 
+    lg_IP <- pitcher_league_IP[[pitcher_key]]
+    lg_Runs <- pitcher_league_Runs[[pitcher_key]]
+  
+    # wOBA Numerator
+    wOBA_num <- ((.69*league_stats$lg_BB) + (.72*league_stats$lg_HBP) + (.88*league_stats$lg_SG) + 
+                   (1.24*league_stats$lg_DB) + (1.56*league_stats$lg_TP) + (1.95*league_stats$lg_HR))
+    # League wOBA
+    lg_wOBA <- wOBA_num/league_stats$lg_PA
+    
+    # wOBA Scale
+    wOBA_scale <- (league_stats$lg_R/league_stats$lg_PA)/(wOBA_num/league_stats$lg_PA)
+    
+    # League wRC
+    lg_wRC <- lg_Runs
+    
+    # League wSB
+    lg_wSB = (league_stats$lg_SB*0.2 + league_stats$lg_CS*(-0.4))
+    
+    # League wGDP
+    lg_wGDP = (league_stats$lg_GDP*(-0.37) + league_stats$lg_SB_OPP*(-0.03))
+    
+    # League Base Running Runs
+    lg_baserun_runs = lg_wSB + lg_wGDP
+    
+    # League Batting Runs
+    lg_bat_runs = 0
+    
+    # Runs Per Win (RPW)
+    rpw = ((9*(lg_Runs/lg_IP))*1.5) + 3
+    
+    # Calculate wRAA, Batting Runs
+    df_filtered <- df_filtered %>%
+    mutate(
+      
+      # Batting Runs
+      singles = h - (x2b + x3b + hr),
+      pa = ab + bb + hbp + sf,
+      
+      wOBA_num = ((.69*bb) + (.72*hbp) + (.88*singles) + (1.24*x2b) + (1.56*x3b) + (1.95*hr)),
+      wOBA = wOBA_num/pa,
+      
+      wRAA = ((wOBA - lg_wOBA)/wOBA_scale)*pa,
+      
+      bat_runs = wRAA + (lg_Runs/league_stats$lg_PA - lg_wRC/league_stats$lg_PA)*pa,
+      
+      # Base Running Runs
+      wSB = sb*0.2 + (att - sb)*(-0.4),
+      sb_opp = ab - h - so - hr,
+      wGDP = gdp*(-0.37) + sb_opp*(-0.03),
+      
+      baserun_runs = wSB + wGDP,
+      
+      # League Adjustment
+      league_adj = ((-1)*(lg_bat_runs + lg_baserun_runs)/league_stats$lg_PA)*pa,
+      
+      # Replacement Level Runs
+      rep_lvl_runs = 0.03*pa,
+      
+      # WAR
+      WARa = ifelse(ab == 0, 0, (wRAA + baserun_runs + league_adj + rep_lvl_runs)/rpw)
+    )
+    
+    # Calculate the correction value
+    total_WARa <- sum(df_filtered$WARa)
+    correction = (21 - total_WARa)/league_stats$lg_PA
+
+    df_filtered <- df_filtered %>%
+      mutate(
+          hWAR = WARa + (correction*pa)
+      )
+
+  assign(nm, df_filtered)
+}
+```
+
+
+
+We add all the hitters to a df and all the pitchers to another.
+```{r, echo=FALSE}
+nums <- setdiff(10:26, 20)
+
+cols_keep <- c("player", "team", "year", "class_year", "position", "pWAR", "ip", "gs", "app", "era")
+
+pitchers <- bind_rows( 
+  lapply(nums, function(n) { 
+    df_name <- paste0("pitchers", n, "_merged") 
+    df <- get(df_name) 
+    df %>% select(all_of(cols_keep)) 
+    }) 
+  )
+
+cols_keep <- c("player", "team", "year", "class_year", "position", "hWAR", "gs", "gp", "avg")
+
+hitters <- bind_rows( 
+  lapply(nums, function(n) { 
+    df_name <- paste0("hitters", n, "_merged") 
+    df <- get(df_name) 
+    df %>% select(all_of(cols_keep)) 
+    }) 
+  )
+```
+
+
+
+Add data from standings,
+```{r, echo=FALSE}
+standings <- bind_rows( 
+  lapply(nums, function(y) { 
+    df_name <- paste0("standings", y) 
+    df <- get(df_name) 
+    df %>% 
+      mutate(year = y) %>% 
+      select(team, year, final_standings)
+    }) 
+  )
+
+
+pitchers <- pitchers %>% 
+  left_join(standings, by = c("team", "year"))
+
+hitters <- hitters %>% 
+  left_join(standings, by = c("team", "year"))
+
+
+
+award_winners <- bind_rows(
+  lapply(nums, function(y) {
+    df_name <- paste0("standings", y)
+    df <- get(df_name)
+    
+    winner_pi <- df %>% filter(pi_oty != "N") %>% pull(pi_oty)
+    winner_pl <- df %>% filter(pl_oty != "N") %>% pull(pl_oty)
+
+    tibble(
+      award_year = y,
+      award_player = winner_pl,
+      award_pitcher = winner_pi
+    )
+  })
+)
+
+
+
+# Get players who won the award that year
+pi_oty_flags <- pitchers %>%
+  left_join(award_winners, by = character()) %>%   
+  filter(award_year == year) %>%              
+  group_by(player, year) %>%
+  summarise(
+    pi_oty = if_else(any(player == award_pitcher), 1, 0),
+    .groups = "drop"
+  ) 
+
+pitchers <- pitchers %>% 
+  left_join(pi_oty_flags, by = c("player", "year")) %>% 
+  mutate(pi_oty = replace_na(pi_oty, 0)) %>% 
+  rename(pi_oty_won = pi_oty)
+
+
+
+pl_oty_flags <- hitters %>%
+  left_join(award_winners, by = character()) %>%   
+  filter(award_year == year) %>%              
+  group_by(player, year) %>%
+  summarise(
+    pl_oty = if_else(any(player == award_player), 1, 0),
+    .groups = "drop"
+  )
+
+hitters <- hitters %>% 
+  left_join(pl_oty_flags, by = c("player", "year")) %>% 
+  mutate(pl_oty = replace_na(pl_oty, 0)) %>% 
+    rename(pl_oty_won = pl_oty)
+
+
+# Get players who have won the award before
+pi_oty_flags_has_won <- pitchers %>%
+  left_join(award_winners, by = character()) %>%   
+  filter(award_year < year) %>%              
+  group_by(player, year) %>%
+  summarise(
+    pi_oty = if_else(any(player == award_pitcher), 1, 0),
+    .groups = "drop"
+  )
+
+pitchers <- pitchers %>% 
+  left_join(pi_oty_flags_has_won, by = c("player", "year")) %>% 
+  mutate(pi_oty = replace_na(pi_oty, 0)) %>% 
+  rename(pi_oty_has_won = pi_oty)
+
+
+
+pl_oty_flags_has_won <- hitters %>%
+  left_join(award_winners, by = character()) %>%   
+  filter(award_year < year) %>%              
+  group_by(player, year) %>%
+  summarise(
+    pl_oty = if_else(any(player == award_player), 1, 0),
+    .groups = "drop"
+  )
+
+hitters <- hitters %>% 
+  left_join(pl_oty_flags_has_won, by = c("player", "year")) %>% 
+  mutate(pl_oty = replace_na(pl_oty, 0)) %>% 
+  rename(pl_oty_has_won = pl_oty)
+```
+
+Input some missing data,
+```{r, echo=FALSE}
+hitters[hitters$player == "Salvatore Taormina" & hitters$year == 14, c("class_year", "position", "pl_oty_won")] <- list("SO", "INF", 1)
+hitters[hitters$player == "Salvatore Taormina" & hitters$year == 15, c("class_year", "position", "pl_oty_has_won")] <- list("JR", "INF", 1)
+hitters[hitters$player == "Salvatore Taormina" & hitters$year == 16, c("class_year", "position", "pl_oty_has_won")] <- list("SR", "INF", 1)
+
+pitchers[pitchers$player == "Mike Shannon " & pitchers$year == 24, "pi_oty_won"] <- 1
+pitchers[pitchers$player == "Mike Shannon " & pitchers$year == 25, "pi_oty_has_won"] <- 1
+```
+
+Standardize Year in school.
+```{r, echo=FALSE}
+fresh <- c("Fr.", "FR")
+soph <- c("So.", "SO")
+junior <- c("Jr.", "JR")
+senior <- c("Sr.", "SR")
+fifth <- c("Gr.", "GR", "GRD", "5th")
+
+
+pitchers <- pitchers %>%
+    mutate(
+      class_year = case_when(
+        class_year %in% fresh ~ "FR",
+        class_year %in% soph ~ "SO",
+        class_year %in% junior ~ "JR",
+        class_year %in% senior ~ "SR",
+        class_year %in% fifth ~ "GR",
+        TRUE ~ class_year)
+      )
+
+hitters <- hitters %>%
+    mutate(
+      class_year = case_when(
+        class_year %in% fresh ~ "FR",
+        class_year %in% soph ~ "SO",
+        class_year %in% junior ~ "JR",
+        class_year %in% senior ~ "SR",
+        class_year %in% fifth ~ "GR",
+        TRUE ~ class_year)
+      )
+```
+
+
+Give order rankings to the year in school.
+```{r, echo=FALSE}
+pitchers$class_year <- factor(
+  pitchers$class_year,
+  levels = c("FR", "SO", "JR", "SR", "GR"),
+  ordered = TRUE
+)
+pitchers$class_year_num <- as.numeric(pitchers$class_year)
+
+
+hitters$class_year <- factor(
+  hitters$class_year,
+  levels = c("FR", "SO", "JR", "SR", "GR"),
+  ordered = TRUE
+)
+hitters$class_year_num <- as.numeric(hitters$class_year)
+```
+
+
+EDA
+```{r, echo=TRUE}
+print("Summary Statistics of Pitchers Dataframe")
+
+cat("\n")
+print("Pitcher WAR")
+summary(pitchers$pWAR)
+
+cat("\n")
+print("Year in School")
+summary(pitchers$class_year_num)
+
+cat("\n")
+print("Innings Pitched")
+summary(pitchers$ip)
+
+cat("\n")
+print("Appearances")
+summary(pitchers$app)
+
+cat("\n")
+print("Games Started")
+summary(pitchers$gs)
+
+cat("\n")
+print("Earned Run Average (ERA)")
+summary(pitchers$era)
+```
+
+```{r, echo=TRUE}
+print("Summary Statistics of Hitters Dataframe")
+
+cat("\n")
+print("Hitter WAR")
+summary(hitters$hWAR)
+
+cat("\n")
+print("Year in School")
+summary(hitters$class_year_num)
+
+cat("\n")
+print("Games Started")
+summary(hitters$gs)
+
+cat("\n")
+print("Games Played")
+summary(hitters$gp)
+
+cat("\n")
+print("Batting Average")
+summary(hitters$avg)
+```
+
+```{r, echo=TRUE}
+hist(pitchers$pWAR,
+     main = "Histogram of Pitcher WAR",
+     xlab = "Pitcher WAR")
+
+hist(pitchers$ip,
+     main = "Histogram of Innings Pitched",
+     xlab = "IP")
+
+hist(pitchers$app,
+     main = "Histogram of Appearances",
+     xlab = "APP")
+
+hist(pitchers$gs,
+     main = "Histogram of Games Started",
+     xlab = "GS")
+
+hist(pitchers$era,
+     main = "Histogram of Earned Run Average",
+     xlab = "ERA")
+
+barplot(table(pitchers$class_year), 
+        main = "Bar Plot of Year in School", 
+        xlab = "Year in School", 
+        ylab = "Frequency")
+
+```
+
+```{r, echo=TRUE}
+hist(hitters$hWAR,
+     main = "Histogram of Hitter WAR",
+     xlab = "Hitter WAR")
+
+hist(hitters$gs,
+     main = "Histogram of Games Started",
+     xlab = "GS")
+
+hist(hitters$gp,
+     main = "Histogram of Games Played",
+     xlab = "GP")
+
+hist(hitters$avg,
+     main = "Histogram of Batting Average",
+     xlab = "BA")
+
+barplot(table(hitters$class_year), 
+        main = "Bar Plot of Year in School", 
+        xlab = "Year in School", 
+        ylab = "Frequency")
+
+barplot(table(hitters$position), 
+        main = "Bar Plot of Positions", 
+        xlab = "Positions", 
+        ylab = "Frequency")
+```
+
+
+```{r, echo=TRUE}
+pitcher_cols <- pitchers[, c("pWAR", "ip", "gs", "app", "era", "final_standings", "class_year_num", "pi_oty_has_won", "pi_oty_won")]
+
+pitcher_cor_df <- data.frame(lapply(pitcher_cols, as.numeric))
+
+cor_matrix_p <- cor(pitcher_cor_df, use = "complete.obs")
+corrplot(cor_matrix_p, 
+         method = "color", 
+         addCoef.col = "black",  
+         number.cex = 0.7,        
+         tl.cex = 0.8,           
+         tl.col = "black") 
+```
+
+```{r, echo=TRUE}
+hitter_cols <- hitters[, c("hWAR", "gs", "gp", "avg", "final_standings", "class_year_num", "pl_oty_has_won", "pl_oty_won")]
+
+hitter_cor_df <- data.frame(lapply(hitter_cols, as.numeric))
+
+cor_matrix_h <- cor(hitter_cor_df, use = "complete.obs")
+corrplot(cor_matrix_h, 
+         method = "color", 
+         addCoef.col = "black",  
+         number.cex = 0.7,        
+         tl.cex = 0.8,           
+         tl.col = "black")
+```
+
+Removing NA rows from the data. This prepares it for modeling.
+```{r}
+pitchers <- pitchers[complete.cases(pitchers), ]
+hitters <- hitters[complete.cases(hitters), ]
+```
+
+
+We begin modeling with Logistic Regression. We will also use SVM and Random Forest.
+
+Full Attributes for Pitcher Models. I am showing the Significant Factors
+
+Target: Player of the Year for that given year
+
+Attributes:
+  -Pitcher WAR
+  -Innings Pitched
+  -Games Started
+  -Appearances
+  -Final Standings of the Team
+  -Year in School
+  -Has the player won the award before
+  
+  
+We want to cut down to players who could win the award. 
+Subjective, but we will use the top 20 hitters and pitchers by WAR per year
+```{r, echo=FALSE}
+most_pitchers <- pitchers %>% 
+  group_by(year) %>% 
+  arrange(desc(pWAR)) %>% 
+  slice_head(n = 20)
+
+# Need to add two players who were not top 20 but won the award
+not20players <- pitchers %>% 
+  filter(
+    (player == "Mike Russo" & year == 11) |
+    (player == "Ryan Zamorsky" & year == 12)
+  )
+pitchers_join <- bind_rows(most_pitchers, not20players) 
+pitchers_model <- pitchers_join %>% 
+  mutate(pWAR_scaled = scale(pWAR))
+
+hitters_model <- hitters %>% 
+  group_by(year) %>% 
+  arrange(desc(hWAR)) %>% 
+  slice_head(n = 20) %>% 
+  mutate(hWAR_scaled = scale(hWAR))
+
+set.seed(123)
+```
+
+
+
+Pitchers Logistic Regression. This uses the question "can i predict the award winner for a new year?"
+```{r}
+cv_ctrl <- trainControl(
+  method = "cv",
+  number = 5,
+  classProbs = TRUE,
+  summaryFunction = twoClassSummary
+)
+
+pitchers_logistic <- pitchers_model
+
+pitchers_logistic$pi_oty_won <- factor(pitchers_logistic$pi_oty_won)
+levels(pitchers_logistic$pi_oty_won) <- make.names(levels(pitchers_logistic$pi_oty_won))
+
+pitchers_logistic$pi_oty_has_won <- factor(pitchers_logistic$pi_oty_has_won)
+levels(pitchers_logistic$pi_oty_has_won) <- make.names(levels(pitchers_logistic$pi_oty_has_won))
+
+model_logp <- train(
+  pi_oty_won ~ pWAR_scaled + ip + gs + app + era + final_standings + pi_oty_has_won + class_year_num,
+  data = pitchers_logistic,
+  method = "glm",
+  family = binomial,
+  trControl = cv_ctrl,
+  metric = "ROC",
+  preProcess = c("center", "scale")
+)
+model_logp
+
+importance_p <- varImp(model_logp)
+importance_p
+
+feature_labels <- c(
+  "era" = "Earned Run Average",
+  "ip" = "Innings Pitched",
+  "gs" = "Games Started",
+  "app" = "Appearances",
+  "pWAR_scaled" = "WAR",
+  "final_standings" = "Final Standings",
+  "class_year_num" = "Grade",
+  "pi_oty_has_wonX1" = "Has Won Award")
+
+ggplot(importance_p, aes(x = reorder(feature, Overall),
+                               y = Overall)) +
+  scale_x_discrete(labels = feature_labels) +
+  geom_col(fill = "steelblue") +
+  coord_flip() +
+  labs(title = "Logistic Regression Pitchers Feature Importance",
+       x = "Feature",
+       y = "Mean Importance Across Folds")
+```
+
+
+
+
+Pitchers SVM.
+```{r, echo=FALSE}
+pitchers_model$pi_oty_won <- as.factor(pitchers_model$pi_oty_won)
+pitchers_model$pi_oty_has_won <- as.factor(pitchers_model$pi_oty_has_won)
+
+years <- sort(unique(pitchers_model$year))
+years_shuffled <- sample(years)
+folds <- split(years_shuffled, rep(1:5, each = 3))
+
+cv_results_pitchers <- map(folds, function(test_years) {
+  
+  train_data <- pitchers_model %>% filter(!year %in% test_years)
+  test_data  <- pitchers_model %>% filter(year %in% test_years)
+  
+  model <- svm(
+    pi_oty_won ~ pWAR_scaled + ip + gs + app + era + final_standings + pi_oty_has_won + class_year_num,
+    data = train_data,
+    kernel = "linear"
+  )
+  
+  preds <- predict(model, test_data)
+  accuracy <- mean(preds == test_data$pi_oty_won)
+  
+  mm <- attr(model$terms, "factors")
+  mm <- model.matrix(
+    formula(model),
+    data = train_data
+  )
+  
+  mm <- mm[, -1]
+  w <- as.vector(t(model$coefs) %*% model$SV)
+  
+  svm_features <- colnames(model$SV)
+  
+  importance <- data.frame(
+    feature = svm_features,
+    importance = abs(w)
+  )
+  
+  list(
+    test_years = test_years,
+    accuracy = accuracy,
+    importance = importance
+  )
+})
+
+importance_all_p <- map2_df(
+  cv_results_pitchers,
+  names(cv_results_pitchers),
+  ~ mutate(.x$importance, fold = .y)
+)
+
+overall_importance_p <- importance_all_p %>%
+  group_by(feature) %>%
+  summarise(mean_importance = mean(importance)) %>%
+  arrange(desc(mean_importance)) %>% 
+  mutate(scaled_importance = 100 * mean_importance / max(mean_importance))
+overall_importance_p
+
+feature_labels <- c(
+  "era" = "Earned Run Average",
+  "ip" = "Innings Pitched",
+  "gs" = "Games Started",
+  "app" = "Appearances",
+  "pWAR_scaled" = "WAR",
+  "final_standings" = "Final Standings",
+  "class_year_num" = "Grade",
+  "pi_oty_has_won1" = "Has Won Award",
+  "pi_oty_has_won0" = "Has Not Won Award")
+
+ggplot(overall_importance_p, aes(x = reorder(feature, scaled_importance),
+                               y = scaled_importance)) +
+  scale_x_discrete(labels = feature_labels) +
+  geom_col(fill = "steelblue") +
+  coord_flip() +
+  labs(title = "SVM Pitchers Feature Importance",
+       x = "Feature",
+       y = "Mean Importance Across Folds")
+```
+ 
+Pitchers Random Forest.
+```{r, echo=FALSE}
+cv_ctrl <- trainControl(
+  method = "cv",
+  number = 5,
+  classProbs = TRUE,
+  summaryFunction = twoClassSummary
+)
+
+pitchers_forest <- pitchers_model
+
+pitchers_forest$pi_oty_won <- factor(pitchers_forest$pi_oty_won)
+levels(pitchers_forest$pi_oty_won) <- make.names(levels(pitchers_forest$pi_oty_won))
+
+pitchers_forest$pi_oty_has_won <- factor(pitchers_forest$pi_oty_has_won)
+levels(pitchers_forest$pi_oty_has_won) <- make.names(levels(pitchers_forest$pi_oty_has_won))
+
+
+rf_model_p <- train(
+  pi_oty_won ~ pWAR_scaled + ip + gs + app + era + final_standings + pi_oty_has_won + class_year_num,
+  data = pitchers_forest,   
+  method = "rf",
+  trControl = cv_ctrl,
+  metric = "ROC",
+  preProcess = c("center", "scale"),
+  importance = TRUE
+)
+rf_model_p
+
+rf_imp_p <- varImp(rf_model_p)
+rf_imp_p
+
+feature_labels <- c(
+  "era" = "Earned Run Average",
+  "ip" = "Innings Pitched",
+  "gs" = "Games Started",
+  "app" = "Appearances",
+  "pWAR_scaled" = "WAR",
+  "final_standings" = "Final Standings",
+  "class_year_num" = "Grade",
+  "pi_oty_has_wonX1" = "Has Won Award")
+
+ggplot(rf_imp_p, aes(x = reorder(feature, XO), 
+                     y = XO)) +
+  geom_col(fill = "steelblue") +
+  scale_x_discrete(labels = feature_labels) +
+  coord_flip() +
+  labs(title = "Random Forest Pitchers Feature Importance",
+       x = "Feature",
+       y = "Mean Importance Across Folds")
+```
+
+
+
+
+
+
+
+
+
+Full Attributes for Hitter Models. Once again, I am showing the Significant Factors
+
+Target: Player of the Year for that given year
+
+Attributes:
+  -Hitter WAR
+  -Games Started
+  -Games Played
+  -Games Started/Games Played
+  -Final Standings of the Team
+  -Year in School
+  -Has the player won the award before
+
+Hitters Logistic Regression.
+```{r, echo=FALSE}
+cv_ctrl <- trainControl(
+  method = "cv",
+  number = 5,
+  classProbs = TRUE,
+  summaryFunction = twoClassSummary
+)
+
+hitters_logistic <- hitters_model
+
+hitters_logistic$pl_oty_won <- factor(hitters_logistic$pl_oty_won)
+levels(hitters_logistic$pl_oty_won) <- make.names(levels(hitters_logistic$pl_oty_won))
+
+hitters_logistic$pl_oty_has_won <- factor(hitters_logistic$pl_oty_has_won)
+levels(hitters_logistic$pl_oty_has_won) <- make.names(levels(hitters_logistic$pl_oty_has_won))
+
+model_logh <- train(
+  pl_oty_won ~ hWAR_scaled + gs + gp + avg + final_standings + pl_oty_has_won + class_year_num,
+  data = hitters_logistic,
+  method = "glm",
+  family = binomial,
+  trControl = cv_ctrl,
+  metric = "ROC",
+  preProcess = c("center", "scale")
+)
+model_logh
+
+importance_h <- varImp(model_logh)
+importance_h
+
+feature_labels <- c(
+  "avg" = "Batting Average",
+  "gp" = "Games Played",
+  "gs" = "Games Started",
+  "hWAR_scaled" = "WAR",
+  "final_standings" = "Final Standings",
+  "class_year_num" = "Grade",
+  "pl_oty_has_wonX1" = "Has Won Award")
+
+ggplot(importance_h, aes(x = reorder(feature, Overall),
+                               y = Overall)) +
+  geom_col(fill = "steelblue") +
+  scale_x_discrete(labels = feature_labels) +
+  coord_flip() +
+  labs(title = "Logistic Regression Hitters Feature Importance",
+       x = "Feature",
+       y = "Mean Importance Across Folds")
+```
+ 
+Hitters SVM.
+```{r, echo=FALSE}
+hitters_model$pl_oty_won <- as.factor(hitters_model$pl_oty_won)
+hitters_model$pl_oty_has_won <- as.factor(hitters_model$pl_oty_has_won)
+
+years <- sort(unique(hitters_model$year))
+years_shuffled <- sample(years)
+folds <- split(years_shuffled, rep(1:5, each = 3))
+
+cv_results_hitters <- map(folds, function(test_years) {
+  
+  train_data <- hitters_model %>% filter(!year %in% test_years)
+  test_data  <- hitters_model %>% filter(year %in% test_years)
+  
+  model <- svm(
+    pl_oty_won ~ hWAR_scaled + gs + gp + avg + final_standings + pl_oty_has_won + class_year_num,
+    data = train_data,
+    kernel = "linear"
+  )
+  
+  preds <- predict(model, test_data)
+  accuracy <- mean(preds == test_data$pl_oty_won)
+  
+  mm <- attr(model$terms, "factors")
+  mm <- model.matrix(
+    formula(model),
+    data = train_data
+  )
+  
+  mm <- mm[, -1]
+  w <- as.vector(t(model$coefs) %*% model$SV)
+  
+  svm_features <- colnames(model$SV)
+  
+  importance <- data.frame(
+    feature = svm_features,
+    importance = abs(w)
+  )
+  
+  list(
+    test_years = test_years,
+    accuracy = accuracy,
+    importance = importance
+  )
+})
+
+importance_all_h <- map2_df(
+  cv_results_hitters,
+  names(cv_results_hitters),
+  ~ mutate(.x$importance, fold = .y)
+)
+
+overall_importance_h <- importance_all_h %>%
+  group_by(feature) %>%
+  summarise(mean_importance = mean(importance)) %>%
+  arrange(desc(mean_importance)) %>% 
+  mutate(scaled_importance = 100 * mean_importance / max(mean_importance))
+overall_importance_h
+
+
+feature_labels <- c(
+  "avg" = "Batting Average",
+  "gp" = "Games Played",
+  "gs" = "Games Started",
+  "hWAR_scaled" = "WAR",
+  "final_standings" = "Final Standings",
+  "class_year_num" = "Grade",
+  "pl_oty_has_won1" = "Has Won Award",
+    "pl_oty_has_won0" = "Has Not Won Award")
+
+ggplot(overall_importance_h, aes(x = reorder(feature, scaled_importance),
+                               y = scaled_importance)) +
+  geom_col(fill = "steelblue") +
+  scale_x_discrete(labels = feature_labels) +
+  coord_flip() +
+  labs(title = "SVM Hitters Feature Importance",
+       x = "Feature",
+       y = "Mean Importance Across Folds")
+```
+ 
+Hitters Random Forest
+```{r, echo=FALSE}
+cv_ctrl <- trainControl(
+  method = "cv",
+  number = 5,
+  classProbs = TRUE,
+  summaryFunction = twoClassSummary
+)
+
+hitters_forest <- hitters_model
+
+hitters_forest$pl_oty_won <- factor(hitters_forest$pl_oty_won)
+levels(hitters_forest$pl_oty_won) <- make.names(levels(hitters_forest$pl_oty_won))
+
+hitters_forest$pl_oty_has_won <- factor(hitters_forest$pl_oty_has_won)
+levels(hitters_forest$pl_oty_has_won) <- make.names(levels(hitters_forest$pl_oty_has_won))
+
+
+rf_model_h <- train(
+  pl_oty_won ~ hWAR_scaled + gs + gp + avg + final_standings + pl_oty_has_won + class_year_num,
+  data = hitters_forest,   
+  method = "rf",
+  trControl = cv_ctrl,
+  metric = "ROC",
+  preProcess = c("center", "scale"),
+  importance = TRUE
+)
+rf_model_h
+
+rf_imp_h <- varImp(rf_model_h)
+rf_imp_h
+
+
+feature_labels <- c(
+  "avg" = "Batting Average",
+  "gp" = "Games Played",
+  "gs" = "Games Started",
+  "hWAR_scaled" = "WAR",
+  "final_standings" = "Final Standings",
+  "class_year_num" = "Grade",
+  "pl_oty_has_wonX1" = "Has Won Award")
+
+ggplot(rf_imp_h, aes(x = reorder(feature, XO),
+                               y = XO)) +
+  geom_col(fill = "steelblue") +
+  scale_x_discrete(labels = feature_labels) +
+  coord_flip() +
+  labs(title = "Random Forest Hitters Feature Importance",
+       x = "Feature",
+       y = "Mean Importance Across Folds")
+```
+
+
+Graph of best WAR for year and WAR for winner of Award.
+```{r, echo=FALSE}
+war_graph_p <- pitchers %>%
+  group_by(year) %>%
+  summarise(
+    max_WAR = max(pWAR),
+    award_WAR = pWAR[pi_oty_won == 1][1] 
+  ) %>%
+  pivot_longer(
+    cols = c(max_WAR, award_WAR),
+    names_to = "type",
+    values_to = "pWAR"
+  )
+
+ggplot(war_graph_p, aes(x = factor(year), y = pWAR, fill = type)) +
+  geom_col(position = "dodge", colour = "black", size = 1) +
+  scale_x_discrete(labels = function(x) paste0("20", x)) +
+  scale_fill_manual(name = "Type", values =  c("award_WAR" = "lightblue", "max_WAR" = "royalblue4"),
+                    labels = c("award_WAR" = "Winner WAR", "max_WAR" = "Max WAR")) +
+  labs(x = "Year",
+       y = "WAR",
+       title = "Pitchers: Award Winner WAR vs Max WAR by Year") +
+  theme_test()
+
+
+
+war_graph_h <- hitters %>%
+  group_by(year) %>%
+  summarise(
+    max_WAR = max(hWAR),
+    award_WAR = hWAR[pl_oty_won == 1][1] 
+  ) %>%
+  pivot_longer(
+    cols = c(max_WAR, award_WAR),
+    names_to = "type",
+    values_to = "pWAR"
+  )
+
+ggplot(war_graph_h, aes(x = factor(year), y = pWAR, fill = type)) +
+  geom_col(position = "dodge", colour = "black", size = 1) +
+  scale_x_discrete(labels = function(x) paste0("20", x)) +
+  scale_fill_manual(name = "Type",
+                    values =  c("award_WAR" = "lightblue", "max_WAR" = "royalblue4"),
+                    labels = c("award_WAR" = "Winner WAR", "max_WAR" = "Max WAR")) +
+  labs(x = "Year",
+       y = "WAR",
+       title = "Hitters: Award Winner WAR vs Max WAR by Year") +
+  theme_test()
+```
+
+
+Graphs of Feature importance.
+```{r, echo=FALSE}
+importance_log <- varImp(model_logp)$importance
+importance_log <- importance_log$Overall
+names(importance_log) <- rownames(varImp(model_logp)$importance)
+
+importance_svm <- overall_importance_p$scaled_importance
+names(importance_svm) <- overall_importance_p$feature
+
+rf_imp <- varImp(rf_model_p)$importance
+importance_rf <- as.numeric(rf_imp$X0)
+names(importance_rf) <- rownames(rf_imp)
+
+
+pitchers_importance <- bind_rows(
+  data.frame(feature = names(importance_log), importance = importance_log, model = "Logistic"),
+  data.frame(feature = names(importance_svm), importance = importance_svm, model = "SVM"),
+  data.frame(feature = names(importance_rf), importance = importance_rf, model = "RandomForest"))
+rows <- c("pi_oty_has_wonX1", "pi_oty_has_won0", "pi_oty_has_won1")
+pitchers_importance <- pitchers_importance %>% 
+  filter(!feature %in% rows) %>% 
+  group_by(feature) %>% 
+  mutate(total_importance = sum(importance)) %>% 
+  ungroup() %>% 
+  mutate(feature = reorder(feature, total_importance))
+
+feature_labels <- c(
+  "era" = "Earned Run Average",
+  "pWAR_scaled" = "WAR",
+  "ip" = "Innings Pitched",
+  "gs" = "Games Started",
+  "app" = "Appearances",
+  "final_standings" = "Final Standings",
+  "class_year_num" = "Grade")
+
+ggplot(pitchers_importance, aes(x = feature, y = importance, fill = model)) +
+  geom_col(position = "dodge", colour = "black") +
+  scale_x_discrete(labels = feature_labels) +
+  scale_fill_manual(name = "Model",
+                    values =  c("Logistic" = "lightblue", "RandomForest" = "royalblue4", "SVM" = "lightgoldenrod"),
+                    labels = c("RandomForest" = "Random Forest")) +
+  labs(title = "Pitchers: Feature Importance Across Models",
+       x = "Feature",
+       y = "Importance") +
+  theme_test() + 
+  coord_flip()
+```
+
+```{r, echo=FALSE}
+importance_log <- varImp(model_logh)$importance
+importance_log <- importance_log$Overall
+names(importance_log) <- rownames(varImp(model_logh)$importance)
+
+importance_svm <- overall_importance_h$scaled_importance
+names(importance_svm) <- overall_importance_h$feature
+
+rf_imp <- varImp(rf_model_h)$importance
+importance_rf <- as.numeric(rf_imp$X0)
+names(importance_rf) <- rownames(rf_imp)
+
+
+hitters_importance <- bind_rows(
+  data.frame(feature = names(importance_log), importance = importance_log, model = "Logistic"),
+  data.frame(feature = names(importance_svm), importance = importance_svm, model = "SVM"),
+  data.frame(feature = names(importance_rf), importance = importance_rf, model = "RandomForest"))
+rows <- c("pl_oty_has_wonX1", "pl_oty_has_won0", "pl_oty_has_won1")
+hitters_importance <- hitters_importance %>% 
+  filter(!feature %in% rows) %>% 
+  group_by(feature) %>% 
+  mutate(total_importance = sum(importance)) %>% 
+  ungroup() %>% 
+  mutate(feature = reorder(feature, total_importance))
+
+feature_labels <- c(
+  "hWAR_scaled" = "WAR",
+  "gs" = "Games Started",
+  "gp" = "Games Played",
+  "avg" = "Batting Average",
+  "final_standings" = "Final Standings",
+  "class_year_num" = "Grade")
+
+ggplot(hitters_importance, aes(x = feature, y = importance, fill = model)) +
+  geom_col(position = "dodge", colour = "black") +
+  scale_x_discrete(labels = feature_labels) +
+  scale_fill_manual(name = "Model",
+                    values =  c("Logistic" = "lightblue", "RandomForest" = "royalblue4", "SVM" = "lightgoldenrod"),
+                    labels = c("RandomForest" = "Random Forest")) +
+  labs(title = "Hitters: Feature Importance Across Models",
+       x = "Feature",
+       y = "Importance") +
+  theme_test() +
+  coord_flip()
+```
+
+```{r}
+the26pitchers <- pitchers %>% 
+  filter(year == 26)
+
+the26hitters <- hitters %>% 
+  filter(year == 26)
+
+ramapitchers <- pitchers %>% 
+  filter(team == "RCNJ")
+
+ramahitters <- hitters %>% 
+  filter(team == "RCNJ")
+```
